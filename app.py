@@ -1,17 +1,19 @@
-import io
 import datetime
-import pandas as pd
+import io
 import sqlite3
+import pandas as pd
 import streamlit as st
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 # Page Configuration
-st.set_page_config(page_title="বাইতুল মাল ব্যবস্থাপনা", page_icon="💰", layout="wide")
+st.set_page_config(
+    page_title="Pathanpara Subunit Baitul Mal", page_icon="", layout="wide"
+)
 
-# Database Setup
+# Database Setup & Migration
 conn = sqlite3.connect("baitul_mal.db", check_same_thread=False)
 c = conn.cursor()
 
@@ -19,9 +21,16 @@ c.execute(
     """CREATE TABLE IF NOT EXISTS members (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
+            phone TEXT,
             address TEXT
         )"""
 )
+
+# Migration check if phone column exists in older database version
+c.execute("PRAGMA table_info(members)")
+columns = [col[1] for col in c.fetchall()]
+if "phone" not in columns:
+    c.execute("ALTER TABLE members ADD COLUMN phone TEXT")
 
 c.execute(
     """CREATE TABLE IF NOT EXISTS collections (
@@ -36,7 +45,6 @@ c.execute(
 c.execute(
     """CREATE TABLE IF NOT EXISTS expenses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            voucher_no TEXT,
             date TEXT,
             day TEXT,
             description TEXT,
@@ -45,31 +53,35 @@ c.execute(
 )
 conn.commit()
 
-# UI CSS for Minimal & Professional Look
+# UI CSS with Hind Siliguri Font Support & Clean UI
 st.markdown(
     """
     <style>
-    .main { padding: 1rem; }
-    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; }
-    .metric-card { background-color: #f8f9fa; border-radius: 10px; padding: 15px; border-left: 5px solid #007bff; }
+    @import url('https://fonts.googleapis.com/css2?family=Hind+Siliguri:wght@400;600;700&display=swap');
+    
+    html, body, [class*="css"], stMarkdown, input, textarea, select {
+        font-family: 'Hind Siliguri', sans-serif !important;
+    }
+    .main { padding: 1.5rem; }
+    .stButton>button { width: 100%; border-radius: 8px; font-weight: bold; background-color: #0d6efd; color: white; }
+    .stButton>button:hover { background-color: #0b5ed7; color: white; }
     </style>
 """,
     unsafe_allow_html=True,
 )
 
-# App Header
-st.title("💰 পাঠানপাড়া সাব-ইউনিট বাইতুল মাল")
-st.caption("ICS পাঠানপাড়া সাব-ইউনিট অনলাইন ডাটাবেস ও হিসাব ব্যবস্থাপনা")
+# App Title Header
+st.title("Pathanpara Subunit BM")
+st.caption("ICS Pathanpara Subunit Online Database & Financial Management System")
 
 tabs = st.tabs(
-    ["📊 ড্যাশবোর্ড", "👥 সদস্য সংগ্রহ", "💸 খরচ (Voucher)", "📄 PDF রিপোর্ট"]
+    [" Dashboard", " Member & Collections", " Expenses", "PDF"]
 )
 
-# ----------------- Tab 1: Dashboard -----------------
+# ----------------- TAB 1: DASHBOARD -----------------
 with tabs[0]:
-    st.subheader("হিসাবের সারসংক্ষেপ")
+    st.subheader("Financial Overview")
 
-    # Fetch total stats
     c.execute("SELECT SUM(amount) FROM collections")
     total_income = c.fetchone()[0] or 0.0
 
@@ -79,82 +91,112 @@ with tabs[0]:
     balance = total_income - total_expense
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("মোট আদায়", f"{total_income:,.2f} টাকা")
-    col2.metric("মোট খরচ", f"{total_expense:,.2f} টাকা")
-    col3.metric("বর্তমান ক্যাশ", f"{balance:,.2f} টাকা")
+    col1.metric("Total Income (Collection)", f"{total_income:,.2f} Tk")
+    col2.metric("Total Expense", f"{total_expense:,.2f} Tk")
+    col3.metric("Current Cash Balance", f"{balance:,.2f} Tk")
 
     st.markdown("---")
-    st.subheader("সদস্যদের মোট প্রদানের তালিকা")
+    st.subheader("Monthly Member Contribution Summary")
 
-    query = """
-        SELECT m.name AS 'নাম', m.address AS 'ঠিকানা', COALESCE(SUM(c.amount), 0) AS 'মোট টাকা'
+    # Dynamic Month-wise Pivot Table
+    pivot_query = """
+        SELECT m.name AS "Name", m.phone AS "Phone", m.address AS "Address", c.month_year, c.amount
         FROM members m
         LEFT JOIN collections c ON m.id = c.member_id
-        GROUP BY m.id
     """
-    df_summary = pd.read_sql_query(query, conn)
+    df_raw = pd.read_sql_query(pivot_query, conn)
 
-    search_term = st.text_input("🔍 সদস্য খুঁজুন (নাম দিয়ে):")
+    if not df_raw.empty and df_raw["month_year"].notna().any():
+        df_pivot = df_raw.pivot_table(
+            index=["Name", "Phone", "Address"],
+            columns="month_year",
+            values="amount",
+            aggfunc="sum",
+            fill_value=0.0,
+        ).reset_index()
+
+        # Calculate Total Amount per Member
+        month_cols = [c for c in df_pivot.columns if c not in ["Name", "Phone", "Address"]]
+        df_pivot["Total Amount (Tk)"] = df_pivot[month_cols].sum(axis=1)
+    else:
+        df_summary_query = """
+            SELECT name AS "Name", phone AS "Phone", address AS "Address", 0.0 AS "Total Amount (Tk)"
+            FROM members
+        """
+        df_pivot = pd.read_sql_query(df_summary_query, conn)
+
+    search_term = st.text_input("Search Member by (Name or Phone):")
     if search_term:
-        df_summary = df_summary[
-            df_summary["নাম"].str.contains(search_term, case=False, na=False)
+        df_pivot = df_pivot[
+            df_pivot["Name"].str.contains(search_term, case=False, na=False)
+            | df_pivot["Phone"].astype(str).str.contains(search_term, case=False, na=False)
         ]
 
-    st.dataframe(df_summary, use_container_width=True)
+    st.dataframe(df_pivot, use_container_width=True)
 
-# ----------------- Tab 2: Members & Income -----------------
+# ----------------- TAB 2: MEMBERS & COLLECTIONS -----------------
 with tabs[1]:
     col_a, col_b = st.columns([1, 1])
 
     with col_a:
-        st.subheader("নতুন সদস্য যোগ করুন")
-        new_name = st.text_input("সদস্যের নাম (একবারই এন্ট্রি করতে হবে)")
-        new_address = st.text_input("ঠিকানা")
+        st.subheader("Add New Member")
+        new_name = st.text_input("Member Name (Required)")
+        new_phone = st.text_input("Phone Number")
+        new_address = st.text_input("Address")
 
-        if st.button("সদস্য যুক্ত করুন"):
+        if st.button("Save Member"):
             if new_name.strip():
                 try:
                     c.execute(
-                        "INSERT INTO members (name, address) VALUES (?, ?)",
-                        (new_name.strip(), new_address.strip()),
+                        "INSERT INTO members (name, phone, address) VALUES (?, ?, ?)",
+                        (new_name.strip(), new_phone.strip(), new_address.strip()),
                     )
                     conn.commit()
-                    st.success(f"{new_name} সফলভাবে যুক্ত হয়েছে!")
+                    st.success(f"Member '{new_name}' added successfully!")
                     st.rerun()
                 except sqlite3.IntegrityError:
-                    st.error("এই নামের সদস্য ইতিমধ্যে ডাটাবেসে আছে!")
+                    st.error("A member with this name already exists!")
             else:
-                st.warning("নাম আবশ্যক!")
+                st.warning("Member Name is required!")
 
     with col_b:
-        st.subheader("মাসিক টাকা এন্ট্রি")
+        st.subheader("Monthly Collection Entry")
         members = pd.read_sql_query("SELECT id, name FROM members", conn)
 
         if not members.empty:
             member_dict = dict(zip(members["name"], members["id"]))
-            selected_member_name = st.selectbox("সদস্য নির্বাচন করুন", members["name"])
-            selected_month = st.date_input(
-                "মাস ও বছর নির্বাচন করুন", datetime.date.today()
-            ).strftime("%B %Y")
-            coll_amount = st.number_input("টাকার পরিমাণ (Tk)", min_value=0.0, step=10.0)
+            selected_member = st.selectbox("Select Member", members["name"])
 
-            if st.button("টাকা জমা করুন"):
-                c.execute(
-                    "INSERT INTO collections (member_id, month_year, amount) VALUES (?, ?, ?)",
-                    (member_dict[selected_member_name], selected_month, coll_amount),
-                )
-                conn.commit()
-                st.success(
-                    f"{selected_member_name}-এর {selected_month} মাসের {coll_amount} টাকা যোগ হয়েছে।"
-                )
+            # Select Month & Year
+            selected_date = st.date_input("Select Month & Year", datetime.date.today())
+            selected_month = selected_date.strftime("%B %Y")
+
+            # Input with value=None so it remains empty by default
+            coll_amount = st.number_input(
+                "Amount (Tk)", min_value=0.0, step=10.0, value=None, placeholder="Enter amount..."
+            )
+
+            if st.button("Submit Collection"):
+                if coll_amount is not None and coll_amount > 0:
+                    c.execute(
+                        "INSERT INTO collections (member_id, month_year, amount) VALUES (?, ?, ?)",
+                        (member_dict[selected_member], selected_month, coll_amount),
+                    )
+                    conn.commit()
+                    st.success(
+                        f"Collected {coll_amount} Tk for {selected_member} ({selected_month})."
+                    )
+                    st.rerun()
+                else:
+                    st.error("Please enter a valid amount!")
         else:
-            st.info("প্রথমে বাম দিকে নতুন সদস্য যোগ করুন।")
+            st.info("Please add a member on the left panel first.")
 
     st.markdown("---")
-    st.subheader("আদায়ের ইতিহাস সম্পাদনা ও ডিলেট")
+    st.subheader("Collection History (Edit / Delete)")
 
     all_coll_query = """
-        SELECT c.id, m.name AS 'নাম', c.month_year AS 'মাস', c.amount AS 'টাকা'
+        SELECT c.id AS "Entry ID", m.name AS "Member Name", c.month_year AS "Month", c.amount AS "Amount (Tk)"
         FROM collections c
         JOIN members m ON c.member_id = m.id
         ORDER BY c.id DESC
@@ -164,113 +206,137 @@ with tabs[1]:
     if not df_coll.empty:
         st.dataframe(df_coll, use_container_width=True)
 
-        selected_id = st.number_input("সম্পাদনা বা ডিলেটের জন্য Entry ID দিন", step=1)
+        selected_id = st.number_input(
+            "Enter Entry ID to Edit/Delete", step=1, value=None, placeholder="ID..."
+        )
         edit_col1, edit_col2 = st.columns(2)
 
         with edit_col1:
-            new_amt = st.number_input("নতুন টাকার পরিমাণ", min_value=0.0)
-            if st.button("টাকা আপডেট করুন"):
-                c.execute(
-                    "UPDATE collections SET amount = ? WHERE id = ?",
-                    (new_amt, selected_id),
-                )
-                conn.commit()
-                st.success("আপডেট সফল হয়েছে!")
-                st.rerun()
+            new_amt = st.number_input(
+                "New Amount (Tk)", min_value=0.0, value=None, placeholder="New amount..."
+            )
+            if st.button("Update Collection"):
+                if selected_id and new_amt is not None:
+                    c.execute(
+                        "UPDATE collections SET amount = ? WHERE id = ?",
+                        (new_amt, selected_id),
+                    )
+                    conn.commit()
+                    st.success("Record updated successfully!")
+                    st.rerun()
+                else:
+                    st.error("Provide valid ID and Amount.")
 
         with edit_col2:
-            if st.button("এন্ট্রি ডিলেট করুন"):
-                c.execute("DELETE FROM collections WHERE id = ?", (selected_id,))
-                conn.commit()
-                st.warning("এন্ট্রি ডিলেট করা হয়েছে!")
-                st.rerun()
+            if st.button("Delete Collection"):
+                if selected_id:
+                    c.execute("DELETE FROM collections WHERE id = ?", (selected_id,))
+                    conn.commit()
+                    st.warning("Record deleted successfully!")
+                    st.rerun()
+                else:
+                    st.error("Provide a valid Entry ID.")
 
-# ----------------- Tab 3: Expenses (Voucher) -----------------
+# ----------------- TAB 3: EXPENSES -----------------
 with tabs[2]:
-    st.subheader("নতুন ভাউচার এন্ট্রি (খরচ)")
+    st.subheader("New Expense Entry")
 
     v_col1, v_col2 = st.columns(2)
     with v_col1:
-        v_no = st.text_input("ভাউচার নম্বর")
-        v_date = st.date_input("তারিখ", datetime.date.today())
-        v_day = v_date.strftime("%A")
+        exp_date = st.date_input("Expense Date", datetime.date.today())
+        exp_day = exp_date.strftime("%A")
 
     with v_col2:
-        v_desc = st.text_area("খরচের বিবরণ (কি কি কাজে খরচ হয়েছে)")
-        v_amount = st.number_input("খরচের পরিমাণ (Tk)", min_value=0.0, step=10.0)
+        exp_desc = st.text_area("Expense Details / Description")
+        exp_amount = st.number_input(
+            "Expense Amount (Tk)", min_value=0.0, step=10.0, value=None, placeholder="Enter amount..."
+        )
 
-    if st.button("ভাউচার সেভ করুন"):
-        if v_no and v_amount > 0:
+    if st.button("Save Expense"):
+        if exp_amount is not None and exp_amount > 0 and exp_desc.strip():
             c.execute(
-                "INSERT INTO expenses (voucher_no, date, day, description, amount) VALUES (?, ?, ?, ?, ?)",
-                (v_no, str(v_date), v_day, v_desc, v_amount),
+                "INSERT INTO expenses (date, day, description, amount) VALUES (?, ?, ?, ?)",
+                (str(exp_date), exp_day, exp_desc.strip(), exp_amount),
             )
             conn.commit()
-            st.success("খরচের এন্ট্রি সেভ করা হয়েছে!")
+            st.success("Expense recorded successfully!")
             st.rerun()
         else:
-            st.error("ভাউচার নম্বর এবং টাকার পরিমাণ সঠিকভাবে লিখুন।")
+            st.error("Please enter a valid description and amount.")
 
     st.markdown("---")
-    st.subheader("খরচের তালিকা")
+    st.subheader("Expense List")
     df_exp = pd.read_sql_query(
-        "SELECT id, voucher_no AS 'ভাউচার', date AS 'তারিখ', day AS 'দিন', description AS 'বিবরণ', amount AS 'টাকা' FROM expenses ORDER BY id DESC",
+        """SELECT ROW_NUMBER() OVER (ORDER BY id DESC) AS 'SL No.', 
+                  date AS 'Date', 
+                  day AS 'Day', 
+                  description AS 'Description', 
+                  amount AS 'Amount (Tk)' 
+           FROM expenses ORDER BY id DESC""",
         conn,
     )
     st.dataframe(df_exp, use_container_width=True)
 
-# ----------------- Tab 4: PDF Export -----------------
+# ----------------- TAB 4: PDF EXPORT -----------------
 with tabs[3]:
-    st.subheader("মাসভিত্তিক PDF ডাউনলোড")
+    st.subheader("Download Monthly PDF Report")
 
     c.execute("SELECT DISTINCT month_year FROM collections")
     months = [row[0] for row in c.fetchall()]
 
     if months:
-        pdf_month = st.selectbox("যে মাসের রিপোর্ট ডাউনলোড করতে চান:", months)
+        pdf_month = st.selectbox("Select Month for PDF Report:", months)
 
-        if st.button("PDF জেনারেট করুন"):
+        if st.button("Generate PDF Report"):
             buffer = io.BytesIO()
-            doc = SimpleDocTemplate(buffer, pagesize=A4)
+            doc = SimpleDocTemplate(
+                buffer, pagesize=A4, rightMargin=30, leftMargin=30, topMargin=30, bottomMargin=30
+            )
             elements = []
             styles = getSampleStyleSheet()
 
-            # Header Text
+            # Header Titles
             elements.append(
                 Paragraph(
-                    f"<b>ICS Pathanpara Subunit Baitul Mal Report</b>", styles["Heading1"]
+                    "<b>Pathanpara Subunit Baitul Mal</b>", styles["Title"]
                 )
             )
-            elements.append(Paragraph(f"Month: {pdf_month}", styles["Heading2"]))
-            elements.append(Spacer(1, 12))
+            elements.append(
+                Paragraph(f"<b>Monthly Collection Report: {pdf_month}</b>", styles["Heading2"])
+            )
+            elements.append(Spacer(1, 15))
 
-            # Fetch monthly data
+            # Fetch monthly collection data
             m_query = """
-                SELECT m.name, m.address, c.amount 
+                SELECT m.name, m.phone, m.address, c.amount 
                 FROM collections c
                 JOIN members m ON c.member_id = m.id
                 WHERE c.month_year = ?
             """
             c.execute(m_query, (pdf_month,))
-            data = [["Name", "Address", "Amount (Tk)"]]
-            total_m_amt = 0
-            for row in c.fetchall():
-                data.append([row[0], row[1], str(row[2])])
-                total_m_amt += row[2]
+            rows = c.fetchall()
 
-            data.append(["Total", "", str(total_m_amt)])
+            data = [["SL", "Name", "Phone", "Address", "Amount (Tk)"]]
+            total_m_amt = 0.0
 
-            t = Table(data)
+            for idx, row in enumerate(rows, 1):
+                data.append([str(idx), str(row[0]), str(row[1] or ""), str(row[2] or ""), f"{row[3]:,.2f}"])
+                total_m_amt += row[3]
+
+            data.append(["", "Total Collection", "", "", f"{total_m_amt:,.2f}"])
+
+            t = Table(data, colWidths=[30, 140, 90, 150, 90])
             t.setStyle(
                 TableStyle(
                     [
-                        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0d6efd")),
                         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
                         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
                         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                        ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-                        ("BACKGROUND", (0, -1), (-1, -1), colors.beige),
-                        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#e9ecef")),
+                        ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
                     ]
                 )
             )
@@ -280,10 +346,10 @@ with tabs[3]:
 
             buffer.seek(0)
             st.download_button(
-                label="📥 PDF ফাইল ডাউনলোড করুন",
+                label=" Download PDF File",
                 data=buffer,
-                file_name=f"Baitul_Mal_{pdf_month}.pdf",
+                file_name=f"Baitul_Mal_Report_{pdf_month.replace(' ', '_')}.pdf",
                 mime="application/pdf",
             )
     else:
-        st.info("এখনো কোনো জমা এন্ট্রি করা হয়নি।")
+        st.info("No collection entries found to generate PDF.")
