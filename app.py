@@ -11,7 +11,7 @@ from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, Tabl
 # Page Configuration with Favicon Icon
 st.set_page_config(
     page_title="Pathanpara Subunit BM",
-    page_icon="bm_favicon.png",  # Here you can use emoji or image URL/path for logo
+    page_icon="favicon.ico",  # Here you can use emoji or image URL/path for logo
     layout="wide",
 )
 
