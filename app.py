@@ -8,10 +8,41 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+
+
+
+
+
+import streamlit as st
+import base64
+
+# আপনার লোগো ইমেজ ব্রাউজারে Favicon হিসেবে সেট করা
+def set_custom_icon(image_path):
+    with open(image_path, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read()).decode()
+    st.markdown(
+        f"""
+        <head>
+            <link rel="icon" type="image/png" href="data:image/png;base64,{encoded_string}">
+            <link rel="apple-touch-icon" href="data:image/png;base64,{encoded_string}">
+        </head>
+        """,
+        unsafe_allow_html=True
+    )
+
+# অ্যাপের শুরুতেই কল করুন
+set_custom_icon("favicon.png")
+
+
+
+
+
+
+
 # Page Configuration with Favicon Icon
 st.set_page_config(
     page_title="Pathanpara Subunit BM",
-    page_icon="favicon.ico.png",  # Here you can use emoji or image URL/path for logo
+    page_icon="favicon.png",  # Here you can use emoji or image URL/path for logo
     layout="wide",
 )
 
